@@ -6,6 +6,47 @@ Each function corresponds to a specific equation section and is designed to mirr
 the mathematical notation as closely as possible for clarity.
 
 Priority: Clarity with the document over computational efficiency.
+
+Module Structure:
+-----------------
+- Utility Functions: Basic vector/matrix operations (no external dependencies)
+- D.1: Rotational State Transformations (DCMs, Quaternions, Euler Angles)
+- D.2: Spatial State Transformations (ECI, ECR, ENU, NED, LLA, Body frames)
+- D.3: Flight Data (airspeed, angle of attack, flight path angle, Mach number)
+- D.4: Aerodynamic Coefficients (dynamic pressure, force coefficients)
+- D.5: Mass Properties (inertia tensor)
+- D.6: Propulsion (thrust)
+- D.7: Geodesy (Vincenty's formula, prime vertical radius)
+- D.8: Unit Conversions
+
+Function Naming Convention:
+---------------------------
+Functions follow the pattern: D_<section>_<subsection>_<name>
+Example: D_1_1_1_roll_rotation_matrix corresponds to equation D.1.1.1
+
+Note: Some document sections group related transformations (position, velocity,
+acceleration) under the same section number. Function names include the
+transformation type to distinguish them.
+
+Coordinate Frames:
+------------------
+- ECI: Earth-Centered Inertial (inertial reference frame)
+- ECR: Earth-Centered Rotating (Earth-fixed frame)
+- ENU: East-North-Up (local tangent plane)
+- NED: North-East-Down (navigation frame)
+- LLA: Latitude-Longitude-Altitude (geodetic coordinates)
+- Body CG: Body frame with origin at center of gravity
+- Body Nose: Body frame with origin at nose
+
+Constants:
+----------
+- OMEGA_EARTH: Earth angular velocity [rad/s]
+- WGS84_A: Semi-major axis [meters]
+- WGS84_B: Semi-minor axis [meters]
+- WGS84_F: Flattening
+- WGS84_E_SQ: First eccentricity squared
+- GAMMA_AIR: Specific heat ratio for air
+- R_AIR: Specific gas constant for air [J/(kg*K)]
 """
 
 import math
@@ -497,6 +538,7 @@ OMEGA_EARTH = 7.292115e-5  # [rad/s] Earth angular velocity magnitude
 # WGS84 Earth Parameters
 WGS84_A = 6378137.0  # [meters] Semi-major axis
 WGS84_F = 1 / 298.257223563  # Flattening
+WGS84_B = WGS84_A * (1 - WGS84_F)  # [meters] Semi-minor axis
 WGS84_E_SQ = 2 * WGS84_F - WGS84_F**2  # First eccentricity squared
 
 
@@ -1700,11 +1742,12 @@ def D_3_2_3_yaw_angle_of_attack(v_air_body_cg: Vector3) -> float:
 # D.3.3 Flight Path Angle
 # -----------------------------------------------------------------------------
 
-def D_3_3_1_local_vertical_unit_vector(lat: float, lon: float) -> Vector3:
+def _local_vertical_unit_vector(lat: float, lon: float) -> Vector3:
     """
-    Helper function for D.3.3.1 and D.3.3.2
+    Helper function for D.3.3.1 and D.3.3.2 Flight Path Angle calculations.
 
-    The local vertical unit vector is calculated from geodetic coordinates:
+    Computes the local vertical unit vector from geodetic coordinates. This
+    vector points radially outward from Earth's surface at the given location.
 
     r_local = | cos(Lat) * cos(Lon) |
               | cos(Lat) * sin(Lon) |
@@ -1715,7 +1758,7 @@ def D_3_3_1_local_vertical_unit_vector(lat: float, lon: float) -> Vector3:
         lon: [radians] Geodetic longitude
 
     Returns:
-        Local vertical unit vector
+        Local vertical unit vector in ECR/ECI frame
     """
     r_local = [
         math.cos(lat) * math.cos(lon),
@@ -1742,7 +1785,7 @@ def D_3_3_1_flight_path_angle_ecr(v_ecr: Vector3, lat: float, lon: float) -> flo
     Returns:
         [radians] Flight path angle in ECR frame (positive = climbing)
     """
-    r_local = D_3_3_1_local_vertical_unit_vector(lat, lon)
+    r_local = _local_vertical_unit_vector(lat, lon)
     v_magnitude = vector_magnitude(v_ecr)
 
     if v_magnitude == 0:
@@ -1773,7 +1816,7 @@ def D_3_3_2_inertial_flight_path_angle(v_eci: Vector3, lat_eci: float, lon_eci: 
     Returns:
         [radians] Inertial flight path angle
     """
-    r_local_eci = D_3_3_1_local_vertical_unit_vector(lat_eci, lon_eci)
+    r_local_eci = _local_vertical_unit_vector(lat_eci, lon_eci)
     v_magnitude = vector_magnitude(v_eci)
 
     if v_magnitude == 0:
@@ -2551,7 +2594,6 @@ __all__ = [
     'D_3_2_1_total_angle_of_attack',
     'D_3_2_2_pitch_angle_of_attack',
     'D_3_2_3_yaw_angle_of_attack',
-    'D_3_3_1_local_vertical_unit_vector',
     'D_3_3_1_flight_path_angle_ecr',
     'D_3_3_2_inertial_flight_path_angle',
     'D_3_4_1_lateral_angular_rate_magnitude',
@@ -2594,6 +2636,7 @@ __all__ = [
     'R_AIR',
     'OMEGA_EARTH',
     'WGS84_A',
+    'WGS84_B',
     'WGS84_F',
     'WGS84_E_SQ',
 ]

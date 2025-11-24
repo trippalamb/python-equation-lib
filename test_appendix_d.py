@@ -47,7 +47,7 @@ from appendix_d import (
     # D.3 Flight Data
     D_3_1_1_airspeed_eci, D_3_1_2_airspeed_body_cg,
     D_3_2_1_total_angle_of_attack, D_3_2_2_pitch_angle_of_attack,
-    D_3_2_3_yaw_angle_of_attack, D_3_3_1_local_vertical_unit_vector,
+    D_3_2_3_yaw_angle_of_attack,
     D_3_3_1_flight_path_angle_ecr, D_3_3_2_inertial_flight_path_angle,
     D_3_4_1_lateral_angular_rate_magnitude, D_3_4_2_precession_angle,
     D_3_4_3_precession_rate, D_3_4_4_spin_angle, D_3_4_5_spin_rate,
@@ -75,7 +75,7 @@ from appendix_d import (
     D_8_3_meters_to_kilometers,
 
     # Constants
-    GAMMA_AIR, R_AIR, OMEGA_EARTH, WGS84_A, WGS84_F, WGS84_E_SQ,
+    GAMMA_AIR, R_AIR, OMEGA_EARTH, WGS84_A, WGS84_B, WGS84_F, WGS84_E_SQ,
 )
 
 
@@ -421,17 +421,21 @@ class TestD3FlightData(unittest.TestCase):
         aoa = D_3_2_3_yaw_angle_of_attack(v_air)
         self.assertAlmostEqual(aoa, math.pi / 4)
 
-    def test_D_3_3_1_local_vertical_unit_vector(self):
-        """Test local vertical unit vector."""
-        # At equator, prime meridian
-        r = D_3_3_1_local_vertical_unit_vector(0, 0)
-        self.assertAlmostEqual(r[0], 1.0)
-        self.assertAlmostEqual(r[1], 0.0)
-        self.assertAlmostEqual(r[2], 0.0)
+    def test_D_3_3_1_flight_path_angle_ecr_climbing(self):
+        """Test flight path angle for climbing trajectory."""
+        # Velocity vector pointing up and forward at equator
+        v_ecr = [100, 0, 100]  # 45 degree climb
+        lat, lon = 0.0, 0.0
+        fpa = D_3_3_1_flight_path_angle_ecr(v_ecr, lat, lon)
+        self.assertAlmostEqual(fpa, math.pi/4, places=5)
 
-        # At north pole
-        r = D_3_3_1_local_vertical_unit_vector(math.pi/2, 0)
-        self.assertAlmostEqual(r[2], 1.0, places=5)
+    def test_D_3_3_1_flight_path_angle_ecr_level(self):
+        """Test flight path angle for level flight."""
+        # Velocity tangent to surface at equator
+        v_ecr = [0, 100, 0]  # East
+        lat, lon = 0.0, 0.0
+        fpa = D_3_3_1_flight_path_angle_ecr(v_ecr, lat, lon)
+        self.assertAlmostEqual(fpa, 0.0, places=5)
 
     def test_D_3_4_1_lateral_angular_rate_magnitude(self):
         """Test lateral angular rate magnitude."""
@@ -481,6 +485,29 @@ class TestD3FlightData(unittest.TestCase):
         a_sensed = [10, 3, 4]  # 3-4-5 triangle in y-z
         a_lateral = D_3_6_3_lateral_sensed_acceleration(a_sensed)
         self.assertAlmostEqual(a_lateral, 5.0)
+
+    def test_D_3_1_2_airspeed_body_cg(self):
+        """Test airspeed transformation to body frame."""
+        # Identity rotation (no rotation)
+        R = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+        v_air_eci = [100, 50, 25]
+        v_air_body = D_3_1_2_airspeed_body_cg(R, v_air_eci)
+        self.assertEqual(v_air_body, v_air_eci)
+
+    def test_D_3_3_2_inertial_flight_path_angle(self):
+        """Test inertial flight path angle."""
+        # Velocity directly radial outward at equator
+        v_eci = [100, 0, 0]
+        lat_eci, lon_eci = 0.0, 0.0
+        fpa = D_3_3_2_inertial_flight_path_angle(v_eci, lat_eci, lon_eci)
+        self.assertAlmostEqual(fpa, math.pi / 2, places=5)
+
+    def test_D_3_6_2_sensed_acceleration_body_cg(self):
+        """Test sensed acceleration transformation to body frame."""
+        R = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+        a_sensed_eci = [1, 2, 3]
+        a_sensed_body = D_3_6_2_sensed_acceleration_body_cg(R, a_sensed_eci)
+        self.assertEqual(a_sensed_body, a_sensed_eci)
 
 
 class TestD4AerodynamicCoefficients(unittest.TestCase):
@@ -588,6 +615,32 @@ class TestD7Geodesy(unittest.TestCase):
         r_pv = D_7_2_prime_vertical_radius(WGS84_A, WGS84_E_SQ, 0.0)
         z_geoid = D_7_3_geoid_correction_term(WGS84_E_SQ, r_pv, 0.0)
         self.assertAlmostEqual(z_geoid, 0.0)
+
+
+class TestConstants(unittest.TestCase):
+    """Tests for module constants."""
+
+    def test_wgs84_constants_consistency(self):
+        """Test WGS84 constant relationships."""
+        # b = a * (1 - f)
+        expected_b = WGS84_A * (1 - WGS84_F)
+        self.assertAlmostEqual(WGS84_B, expected_b)
+
+        # e^2 = 2f - f^2
+        expected_e_sq = 2 * WGS84_F - WGS84_F**2
+        self.assertAlmostEqual(WGS84_E_SQ, expected_e_sq)
+
+    def test_wgs84_a_value(self):
+        """Test WGS84 semi-major axis value."""
+        self.assertEqual(WGS84_A, 6378137.0)
+
+    def test_omega_earth_value(self):
+        """Test Earth angular velocity value."""
+        self.assertAlmostEqual(OMEGA_EARTH, 7.292115e-5)
+
+    def test_gamma_air_value(self):
+        """Test specific heat ratio for air."""
+        self.assertEqual(GAMMA_AIR, 1.4)
 
 
 class TestD8UnitConversions(unittest.TestCase):
