@@ -187,6 +187,42 @@ def sign(x: float) -> float:
         return 0.0
 
 
+def matrix_transpose(M: Matrix3x3) -> Matrix3x3:
+    """
+    Transpose a 3x3 matrix.
+
+    M^T[i][j] = M[j][i]
+
+    Args:
+        M: 3x3 matrix
+
+    Returns:
+        Transposed 3x3 matrix
+    """
+    M_T = [
+        [M[0][0], M[1][0], M[2][0]],
+        [M[0][1], M[1][1], M[2][1]],
+        [M[0][2], M[1][2], M[2][2]]
+    ]
+    return M_T
+
+
+def vector_scale(v: Vector3, s: float) -> Vector3:
+    """
+    Scale a vector by a scalar.
+
+    result = s * v
+
+    Args:
+        v: 3-component vector
+        s: Scalar multiplier
+
+    Returns:
+        Scaled vector
+    """
+    return [s * v[0], s * v[1], s * v[2]]
+
+
 # =============================================================================
 # D.1 ROTATIONAL STATE TRANSFORMATIONS
 # =============================================================================
@@ -450,28 +486,1087 @@ def D_1_2_3_quaternion_to_body_direction(q_s: float, q_i: float, q_j: float, q_k
 # =============================================================================
 # D.2 SPATIAL STATE TRANSFORMATIONS
 # =============================================================================
-# Note: The appendix references coordinate transformations but D.2 section
-# is not fully provided. We implement the referenced ECI to Body CG DCM
-# which uses the Euler angles from the quaternion.
+
+# -----------------------------------------------------------------------------
+# D.2.0 Common Earth Dynamics
+# -----------------------------------------------------------------------------
+
+# WGS84 Earth Angular Velocity
+OMEGA_EARTH = 7.292115e-5  # [rad/s] Earth angular velocity magnitude
+
+# WGS84 Earth Parameters
+WGS84_A = 6378137.0  # [meters] Semi-major axis
+WGS84_F = 1 / 298.257223563  # Flattening
+WGS84_E_SQ = 2 * WGS84_F - WGS84_F**2  # First eccentricity squared
+
+
+def D_2_0_1_earth_angular_velocity_vector() -> Vector3:
+    """
+    D.2.0.1 Earth Angular Velocity
+
+    Earth angular velocity vector about the Z-axis (polar axis).
+
+    Omega_Earth = | 0           |
+                  | 0           |
+                  | omega_Earth |
+
+    Returns:
+        [rad/s] Earth angular velocity vector in ECI and ECR frames
+    """
+    Omega_Earth = [0.0, 0.0, OMEGA_EARTH]
+    return Omega_Earth
+
+
+def D_2_0_2_earth_rotation_angle(t: float) -> float:
+    """
+    D.2.0.2 Earth Rotation Angle
+
+    The Earth rotation angle represents the angular displacement of Earth
+    about its rotation axis since the simulation initialization time.
+
+    psi_Earth = omega_Earth * t
+
+    Args:
+        t: [seconds] Current trajectory time
+
+    Returns:
+        [radians] Earth rotation angle since simulation initialization
+    """
+    psi_Earth = OMEGA_EARTH * t
+    return psi_Earth
+
+
+def D_2_0_3_transport_velocity(r_eci: Vector3) -> Vector3:
+    """
+    D.2.0.3 Transport Velocity
+
+    Transport velocity represents the velocity component induced by Earth's
+    rotation at a given position in the ECR frame.
+
+    v_transport = Omega_Earth x r_ECI
+
+    Args:
+        r_eci: [meters] Position vector in ECI frame
+
+    Returns:
+        [m/s] Transport velocity vector in ECI frame
+    """
+    Omega_Earth = D_2_0_1_earth_angular_velocity_vector()
+    v_transport = vector_cross(Omega_Earth, r_eci)
+    return v_transport
+
+
+def D_2_0_4_relative_velocity_eci(v_eci: Vector3, v_transport: Vector3) -> Vector3:
+    """
+    D.2.0.4 Relative Velocity (ECI)
+
+    Relative velocity in ECI represents the velocity of an object relative
+    to Earth's rotating surface, with vector components expressed in ECI frame.
+
+    v_relative_ECI = v_ECI - v_transport
+
+    Args:
+        v_eci: [m/s] Velocity vector in ECI frame
+        v_transport: [m/s] Transport velocity (from D.2.0.3)
+
+    Returns:
+        [m/s] Relative velocity vector in ECI frame
+    """
+    v_relative_eci = vector_subtract(v_eci, v_transport)
+    return v_relative_eci
+
+
+def D_2_0_5_coriolis_acceleration(v_relative_eci: Vector3) -> Vector3:
+    """
+    D.2.0.5 Coriolis Acceleration
+
+    Coriolis acceleration is an apparent acceleration observed in rotating
+    frames, arising from the motion of an object relative to the rotating frame.
+
+    a_Coriolis = 2 * (Omega_Earth x v_relative_ECI)
+
+    Args:
+        v_relative_eci: [m/s] Relative velocity vector in ECI frame (from D.2.0.4)
+
+    Returns:
+        [m/s^2] Coriolis acceleration vector in ECI frame
+    """
+    Omega_Earth = D_2_0_1_earth_angular_velocity_vector()
+    a_Coriolis = vector_scale(vector_cross(Omega_Earth, v_relative_eci), 2.0)
+    return a_Coriolis
+
+
+def D_2_0_6_centripetal_acceleration(v_transport: Vector3) -> Vector3:
+    """
+    D.2.0.6 Centripetal Acceleration
+
+    Centripetal acceleration represents the acceleration directed toward
+    Earth's rotation axis required to maintain circular motion.
+
+    a_centripetal = Omega_Earth x v_transport
+
+    Args:
+        v_transport: [m/s] Transport velocity (from D.2.0.3)
+
+    Returns:
+        [m/s^2] Centripetal acceleration vector in ECI frame
+    """
+    Omega_Earth = D_2_0_1_earth_angular_velocity_vector()
+    a_centripetal = vector_cross(Omega_Earth, v_transport)
+    return a_centripetal
+
+
+def D_2_0_7_relative_acceleration_eci(a_eci: Vector3, a_Coriolis: Vector3,
+                                       a_centripetal: Vector3) -> Vector3:
+    """
+    D.2.0.7 Relative Acceleration (ECI)
+
+    Relative acceleration in ECI represents the acceleration of an object
+    as observed in Earth's rotating frame.
+
+    a_relative_ECI = a_ECI - a_Coriolis - a_centripetal
+
+    Args:
+        a_eci: [m/s^2] Acceleration vector in ECI frame
+        a_Coriolis: [m/s^2] Coriolis acceleration (from D.2.0.5)
+        a_centripetal: [m/s^2] Centripetal acceleration (from D.2.0.6)
+
+    Returns:
+        [m/s^2] Relative acceleration vector in ECI frame
+    """
+    a_relative_eci = vector_subtract(vector_subtract(a_eci, a_Coriolis), a_centripetal)
+    return a_relative_eci
+
+
+# -----------------------------------------------------------------------------
+# D.2.1 From ECI
+# -----------------------------------------------------------------------------
+
+def D_2_1_1_1_eci_to_ecr_dcm(psi_Earth: float) -> Matrix3x3:
+    """
+    D.2.1.1.1 ECI to ECR (DCM)
+
+    The direction cosine matrix for ECI to ECR transformation consists of
+    a rotation about the Z-axis by Earth's rotation angle.
+
+    R_ECI_to_ECR = R_yaw(psi_Earth)
+
+    Args:
+        psi_Earth: [radians] Earth rotation angle (from D.2.0.2)
+
+    Returns:
+        3x3 DCM transforming from ECI to ECR frame
+    """
+    R_eci_to_ecr = D_1_1_3_yaw_rotation_matrix(psi_Earth)
+    return R_eci_to_ecr
+
+
+def D_2_1_1_2_eci_to_ecr_position(R_eci_to_ecr: Matrix3x3, r_eci: Vector3) -> Vector3:
+    """
+    D.2.1.1.2 ECI to ECR Position
+
+    Position transformation between ECI and ECR frames requires only rotation.
+
+    r_ECR = R_ECI_to_ECR . r_ECI
+
+    Args:
+        R_eci_to_ecr: ECI to ECR DCM (from D.2.1.1.1)
+        r_eci: [meters] Position vector in ECI frame
+
+    Returns:
+        [meters] Position vector in ECR frame
+    """
+    r_ecr = matrix_vector_multiply(R_eci_to_ecr, r_eci)
+    return r_ecr
+
+
+def D_2_1_1_3_eci_to_ecr_velocity(R_eci_to_ecr: Matrix3x3,
+                                   v_relative_eci: Vector3) -> Vector3:
+    """
+    D.2.1.1.3 ECI to ECR Velocity
+
+    Velocity transformation from ECI to ECR accounts for the transport velocity
+    and rotates into the ECR frame basis.
+
+    v_ECR = R_ECI_to_ECR . v_relative_ECI
+
+    Args:
+        R_eci_to_ecr: ECI to ECR DCM (from D.2.1.1.1)
+        v_relative_eci: [m/s] Relative velocity in ECI frame (from D.2.0.4)
+
+    Returns:
+        [m/s] Velocity vector in ECR frame
+    """
+    v_ecr = matrix_vector_multiply(R_eci_to_ecr, v_relative_eci)
+    return v_ecr
+
+
+def D_2_1_1_4_eci_to_ecr_acceleration(R_eci_to_ecr: Matrix3x3,
+                                       a_relative_eci: Vector3) -> Vector3:
+    """
+    D.2.1.1.4 ECI to ECR Acceleration
+
+    Acceleration transformation from ECI to ECR accounts for Coriolis and
+    centripetal accelerations and rotates into the ECR frame basis.
+
+    a_ECR = R_ECI_to_ECR . a_relative_ECI
+
+    Args:
+        R_eci_to_ecr: ECI to ECR DCM (from D.2.1.1.1)
+        a_relative_eci: [m/s^2] Relative acceleration in ECI frame (from D.2.0.7)
+
+    Returns:
+        [m/s^2] Acceleration vector in ECR frame
+    """
+    a_ecr = matrix_vector_multiply(R_eci_to_ecr, a_relative_eci)
+    return a_ecr
+
 
 def D_2_1_2_1_eci_to_body_cg_dcm(phi: float, theta: float, psi: float) -> Matrix3x3:
     """
-    D.2.1.2.1 ECI to Body CG DCM
+    D.2.1.2.1 ECI to Body CG (DCM)
 
-    The DCM that transforms vectors from ECI frame to Body CG frame.
-    Uses the yaw-pitch-roll rotation sequence.
+    The direction cosine matrix transforming from ECI to Body CG frame is
+    the Yaw-Pitch-Roll DCM constructed from Euler angles.
 
     R_ECI_to_BodyCG = DCM(phi, theta, psi)
 
     Args:
-        phi: Roll angle (I2B) [radians]
-        theta: Pitch angle (I2B) [radians]
-        psi: Yaw angle (I2B) [radians]
+        phi: [radians] Roll angle (I2B)
+        theta: [radians] Pitch angle (I2B)
+        psi: [radians] Yaw angle (I2B)
 
     Returns:
         3x3 DCM for ECI to Body CG transformation
     """
     return D_1_1_4_1_composite_dcm(phi, theta, psi)
+
+
+def D_2_1_2_2_eci_to_body_cg_position() -> Vector3:
+    """
+    D.2.1.2.2 ECI to Body CG Position
+
+    The missile's position in its own body frame is always at the origin.
+
+    r_BodyCG = [0, 0, 0]
+
+    Returns:
+        [meters] Position vector in Body CG frame (always origin)
+    """
+    r_body_cg = [0.0, 0.0, 0.0]
+    return r_body_cg
+
+
+def D_2_1_2_3_eci_to_body_cg_velocity(R_eci_to_body_cg: Matrix3x3,
+                                       v_eci: Vector3) -> Vector3:
+    """
+    D.2.1.2.3 ECI to Body CG Velocity
+
+    Velocity vectors transform from ECI to Body CG frame through rotation only.
+
+    v_BodyCG = R_ECI_to_BodyCG . v_ECI
+
+    Args:
+        R_eci_to_body_cg: ECI to Body CG DCM (from D.2.1.2.1)
+        v_eci: [m/s] Velocity vector in ECI frame
+
+    Returns:
+        [m/s] Velocity vector in Body CG frame
+    """
+    v_body_cg = matrix_vector_multiply(R_eci_to_body_cg, v_eci)
+    return v_body_cg
+
+
+def D_2_1_2_3_eci_to_body_cg_acceleration(R_eci_to_body_cg: Matrix3x3,
+                                           a_eci: Vector3) -> Vector3:
+    """
+    D.2.1.2.3 ECI to Body CG Acceleration
+
+    Acceleration vectors transform from ECI to Body CG frame through rotation only.
+
+    a_BodyCG = R_ECI_to_BodyCG . a_ECI
+
+    Args:
+        R_eci_to_body_cg: ECI to Body CG DCM (from D.2.1.2.1)
+        a_eci: [m/s^2] Acceleration vector in ECI frame
+
+    Returns:
+        [m/s^2] Acceleration vector in Body CG frame
+    """
+    a_body_cg = matrix_vector_multiply(R_eci_to_body_cg, a_eci)
+    return a_body_cg
+
+
+# -----------------------------------------------------------------------------
+# D.2.2 From ECR
+# -----------------------------------------------------------------------------
+
+def D_2_2_1_1_ecr_to_eci_dcm(psi_Earth: float) -> Matrix3x3:
+    """
+    D.2.2.1.1 ECR to ECI (DCM)
+
+    The ECR to ECI transformation is the inverse (transpose) of the ECI to ECR DCM.
+
+    R_ECR_to_ECI = R_ECI_to_ECR^T
+
+    Args:
+        psi_Earth: [radians] Earth rotation angle (from D.2.0.2)
+
+    Returns:
+        3x3 DCM transforming from ECR to ECI frame
+    """
+    R_eci_to_ecr = D_2_1_1_1_eci_to_ecr_dcm(psi_Earth)
+    R_ecr_to_eci = matrix_transpose(R_eci_to_ecr)
+    return R_ecr_to_eci
+
+
+def D_2_2_1_2_ecr_to_eci_position(R_ecr_to_eci: Matrix3x3, r_ecr: Vector3) -> Vector3:
+    """
+    D.2.2.1.2 ECR to ECI Position
+
+    Position transformation between ECR and ECI frames requires only rotation.
+
+    r_ECI = R_ECR_to_ECI . r_ECR
+
+    Args:
+        R_ecr_to_eci: ECR to ECI DCM (from D.2.2.1.1)
+        r_ecr: [meters] Position vector in ECR frame
+
+    Returns:
+        [meters] Position vector in ECI frame
+    """
+    r_eci = matrix_vector_multiply(R_ecr_to_eci, r_ecr)
+    return r_eci
+
+
+def D_2_2_1_3_ecr_to_eci_velocity(R_ecr_to_eci: Matrix3x3, v_ecr: Vector3,
+                                   v_transport: Vector3) -> Vector3:
+    """
+    D.2.2.1.3 ECR to ECI Velocity
+
+    Velocity transformation from ECR to ECI rotates the velocity and adds
+    the transport velocity component.
+
+    v_ECI = R_ECR_to_ECI . v_ECR + v_transport
+
+    Args:
+        R_ecr_to_eci: ECR to ECI DCM (from D.2.2.1.1)
+        v_ecr: [m/s] Velocity vector in ECR frame
+        v_transport: [m/s] Transport velocity (from D.2.0.3)
+
+    Returns:
+        [m/s] Velocity vector in ECI frame
+    """
+    v_eci = vector_add(matrix_vector_multiply(R_ecr_to_eci, v_ecr), v_transport)
+    return v_eci
+
+
+def D_2_2_1_4_ecr_to_eci_acceleration(R_ecr_to_eci: Matrix3x3, a_ecr: Vector3,
+                                       a_Coriolis: Vector3,
+                                       a_centripetal: Vector3) -> Vector3:
+    """
+    D.2.2.1.4 ECR to ECI Acceleration
+
+    Acceleration transformation from ECR to ECI rotates the acceleration and
+    adds Coriolis and centripetal terms.
+
+    a_ECI = R_ECR_to_ECI . a_ECR + a_Coriolis + a_centripetal
+
+    Args:
+        R_ecr_to_eci: ECR to ECI DCM (from D.2.2.1.1)
+        a_ecr: [m/s^2] Acceleration vector in ECR frame
+        a_Coriolis: [m/s^2] Coriolis acceleration (from D.2.0.5)
+        a_centripetal: [m/s^2] Centripetal acceleration (from D.2.0.6)
+
+    Returns:
+        [m/s^2] Acceleration vector in ECI frame
+    """
+    a_eci = vector_add(
+        vector_add(matrix_vector_multiply(R_ecr_to_eci, a_ecr), a_Coriolis),
+        a_centripetal
+    )
+    return a_eci
+
+
+def D_2_2_2_ecr_to_lla(r_ecr: Vector3,
+                        r_a: float = WGS84_A,
+                        epsilon_sq: float = WGS84_E_SQ) -> Tuple[float, float, float]:
+    """
+    D.2.2.2 ECR to Latitude-Longitude-Altitude (LLA)
+
+    Conversion from ECR Cartesian coordinates to geodetic latitude, longitude,
+    and altitude using an iterative algorithm that accounts for Earth's
+    ellipsoidal shape.
+
+    Args:
+        r_ecr: [meters] Position vector in ECR frame [x, y, z]
+        r_a: [meters] Earth semi-major axis (default: WGS84)
+        epsilon_sq: First eccentricity squared (default: WGS84)
+
+    Returns:
+        Tuple of (Lat, Lon, Alt) in [radians, radians, meters]
+    """
+    r_x = r_ecr[0]
+    r_y = r_ecr[1]
+    r_z = r_ecr[2]
+
+    # w = horizontal distance from Z-axis
+    w = math.sqrt(r_x**2 + r_y**2)
+
+    # l = half of first eccentricity squared
+    l = epsilon_sq / 2
+
+    # m = normalized squared horizontal distance
+    m = w**2 / r_a**2
+
+    # n = normalized squared vertical distance
+    n = r_z**2 * (1 - epsilon_sq) / r_a**2
+
+    # p = intermediate parameter for quartic equation
+    p = (m + n - 4 * l**2) / 6
+
+    # G = product term for feasibility check
+    G = m * n * l**2
+
+    # H = feasibility discriminant
+    H = 2 * p**3 + G
+
+    # H_min threshold (epsilon^12 / 4 for WGS84)
+    H_min = epsilon_sq**6 / 4
+
+    if H < H_min:
+        # Near-singular case - use simplified calculation
+        Lon = math.atan2(r_y, r_x)
+        Lat = math.atan2(r_z, w * (1 - epsilon_sq))
+        r_pv = D_7_2_prime_vertical_radius(r_a, epsilon_sq, Lat)
+        Alt = w / math.cos(Lat) - r_pv if abs(math.cos(Lat)) > 1e-10 else abs(r_z) - r_a * math.sqrt(1 - epsilon_sq)
+        return (Lat, Lon, Alt)
+
+    # C = cube root term for quartic solution
+    C = (H + G + 2 * math.sqrt(H * G))**(1/3) / 2**(1/3)
+
+    # i = sum parameter
+    i = -(2 * l**2 + m + n) / 2
+
+    # beta = quartic solution component
+    beta = i / 3 - C - p**2 / C if C != 0 else i / 3
+
+    # k = quartic constant term
+    k = l**2 * (l**2 - m - n)
+
+    # t = primary solution parameter of quartic equation
+    term1 = math.sqrt(max(0, beta**2 - k))
+    term2 = (beta + i) / 2
+    term3 = abs((beta - i) / 2)
+
+    t = math.sqrt(max(0, term1 - term2)) - sign(m - n) * math.sqrt(term3)
+
+    # F = quartic polynomial evaluated at t
+    F = t**4 + 2 * i * t**2 + 2 * l * (m - n) * t + k
+
+    # dF/dt = derivative of quartic polynomial
+    dF_dt = 4 * t**3 + 4 * i * t + 2 * l * (m - n)
+
+    # Delta t = Newton-Raphson correction term
+    if abs(dF_dt) > 1e-20:
+        delta_t = -F / dF_dt
+    else:
+        delta_t = 0.0
+
+    # u = corrected positive offset parameter
+    u = t + delta_t + l
+
+    # v = corrected negative offset parameter
+    v = t + delta_t - l
+
+    # Delta w = horizontal displacement correction
+    if abs(u) > 1e-20:
+        delta_w = w * (1 - 1 / u)
+    else:
+        delta_w = 0.0
+
+    # Delta z = vertical displacement correction
+    if abs(v) > 1e-20:
+        delta_z = r_z * (1 - (1 - epsilon_sq) / v)
+    else:
+        delta_z = 0.0
+
+    # Lat = geodetic latitude
+    Lat = math.atan2(r_z * u, w * v)
+
+    # Lon = geodetic longitude
+    Lon = math.atan2(r_y, r_x)
+
+    # Alt = geodetic altitude
+    Alt = sign(u - 1) * math.sqrt(delta_w**2 + delta_z**2)
+
+    return (Lat, Lon, Alt)
+
+
+def D_2_2_3_1_ecr_to_enu_dcm(lat: float, lon: float) -> Matrix3x3:
+    """
+    D.2.2.3.1 ECR to ENU (DCM)
+
+    The ECR to ENU transformation establishes a local tangent plane coordinate
+    system at a specified geodetic reference point.
+
+    R_ECR_to_ENU = | -sin(Lon)              cos(Lon)               0        |
+                   | -sin(Lat)cos(Lon)     -sin(Lat)sin(Lon)       cos(Lat) |
+                   |  cos(Lat)cos(Lon)      cos(Lat)sin(Lon)       sin(Lat) |
+
+    Args:
+        lat: [radians] Reference geodetic latitude
+        lon: [radians] Reference geodetic longitude
+
+    Returns:
+        3x3 DCM transforming from ECR to ENU frame
+    """
+    sin_lat = math.sin(lat)
+    cos_lat = math.cos(lat)
+    sin_lon = math.sin(lon)
+    cos_lon = math.cos(lon)
+
+    R_ecr_to_enu = [
+        [-sin_lon,             cos_lon,              0       ],
+        [-sin_lat * cos_lon,  -sin_lat * sin_lon,   cos_lat ],
+        [ cos_lat * cos_lon,   cos_lat * sin_lon,   sin_lat ]
+    ]
+    return R_ecr_to_enu
+
+
+def D_2_2_3_2_ecr_to_enu_position(R_ecr_to_enu: Matrix3x3, r_ecr: Vector3,
+                                   z_geoid: float, r_pv: float,
+                                   alt: float) -> Vector3:
+    """
+    D.2.2.3.2 ECR to ENU Position
+
+    Position transformation from ECR to ENU requires accounting for Earth's
+    ellipsoidal shape through geoid corrections.
+
+    r_ECR' = r_ECR + [0, 0, z_geoid]
+    r_ENU' = R_ECR_to_ENU . r_ECR'
+    r_ENU = r_ENU' - [0, 0, (r_pv + Alt)]
+
+    Args:
+        R_ecr_to_enu: ECR to ENU DCM (from D.2.2.3.1)
+        r_ecr: [meters] Position vector in ECR frame
+        z_geoid: [meters] Geoid correction term (from D.7.3)
+        r_pv: [meters] Prime vertical radius (from D.7.2)
+        alt: [meters] Reference geodetic altitude
+
+    Returns:
+        [meters] Position vector in ENU frame
+    """
+    # r_ECR' = r_ECR + [0, 0, z_geoid]
+    r_ecr_prime = vector_add(r_ecr, [0.0, 0.0, z_geoid])
+
+    # r_ENU' = R_ECR_to_ENU . r_ECR'
+    r_enu_prime = matrix_vector_multiply(R_ecr_to_enu, r_ecr_prime)
+
+    # r_ENU = r_ENU' - [0, 0, (r_pv + Alt)]
+    r_enu = vector_subtract(r_enu_prime, [0.0, 0.0, r_pv + alt])
+
+    return r_enu
+
+
+def D_2_2_3_3_ecr_to_enu_velocity(R_ecr_to_enu: Matrix3x3,
+                                   v_ecr: Vector3) -> Vector3:
+    """
+    D.2.2.3.3 ECR to ENU Velocity
+
+    Velocity vectors transform from ECR to ENU frame through rotation only.
+
+    v_ENU = R_ECR_to_ENU . v_ECR
+
+    Args:
+        R_ecr_to_enu: ECR to ENU DCM (from D.2.2.3.1)
+        v_ecr: [m/s] Velocity vector in ECR frame
+
+    Returns:
+        [m/s] Velocity vector in ENU frame
+    """
+    v_enu = matrix_vector_multiply(R_ecr_to_enu, v_ecr)
+    return v_enu
+
+
+def D_2_2_3_3_ecr_to_enu_acceleration(R_ecr_to_enu: Matrix3x3,
+                                       a_ecr: Vector3) -> Vector3:
+    """
+    D.2.2.3.3 ECR to ENU Acceleration
+
+    Acceleration vectors transform from ECR to ENU frame through rotation only.
+
+    a_ENU = R_ECR_to_ENU . a_ECR
+
+    Args:
+        R_ecr_to_enu: ECR to ENU DCM (from D.2.2.3.1)
+        a_ecr: [m/s^2] Acceleration vector in ECR frame
+
+    Returns:
+        [m/s^2] Acceleration vector in ENU frame
+    """
+    a_enu = matrix_vector_multiply(R_ecr_to_enu, a_ecr)
+    return a_enu
+
+
+# -----------------------------------------------------------------------------
+# D.2.3 From ENU
+# -----------------------------------------------------------------------------
+
+def D_2_3_1_1_enu_to_ecr_dcm(lat: float, lon: float) -> Matrix3x3:
+    """
+    D.2.3.1.1 ENU to ECR (DCM)
+
+    The ENU to ECR transformation is the transpose of the ECR to ENU DCM.
+
+    R_ENU_to_ECR = R_ECR_to_ENU^T
+
+    Expanded form:
+    R_ENU_to_ECR = | -sin(Lon)   -sin(Lat)cos(Lon)   cos(Lat)cos(Lon) |
+                   |  cos(Lon)   -sin(Lat)sin(Lon)   cos(Lat)sin(Lon) |
+                   |  0           cos(Lat)           sin(Lat)         |
+
+    Args:
+        lat: [radians] Reference geodetic latitude
+        lon: [radians] Reference geodetic longitude
+
+    Returns:
+        3x3 DCM transforming from ENU to ECR frame
+    """
+    R_ecr_to_enu = D_2_2_3_1_ecr_to_enu_dcm(lat, lon)
+    R_enu_to_ecr = matrix_transpose(R_ecr_to_enu)
+    return R_enu_to_ecr
+
+
+def D_2_3_1_2_enu_to_ecr_position(R_enu_to_ecr: Matrix3x3, r_enu: Vector3,
+                                   r_pv: float, alt: float,
+                                   z_geoid: float) -> Vector3:
+    """
+    D.2.3.1.2 ENU to ECR Position
+
+    r_ENU' = r_ENU + [0, 0, (r_pv + Alt)]
+    r_ECR' = R_ENU_to_ECR . r_ENU'
+    r_ECR = r_ECR' - [0, 0, z_geoid]
+
+    Args:
+        R_enu_to_ecr: ENU to ECR DCM (from D.2.3.1.1)
+        r_enu: [meters] Position vector in ENU frame
+        r_pv: [meters] Prime vertical radius (from D.7.2)
+        alt: [meters] Reference geodetic altitude
+        z_geoid: [meters] Geoid correction term (from D.7.3)
+
+    Returns:
+        [meters] Position vector in ECR frame
+    """
+    # r_ENU' = r_ENU + [0, 0, (r_pv + Alt)]
+    r_enu_prime = vector_add(r_enu, [0.0, 0.0, r_pv + alt])
+
+    # r_ECR' = R_ENU_to_ECR . r_ENU'
+    r_ecr_prime = matrix_vector_multiply(R_enu_to_ecr, r_enu_prime)
+
+    # r_ECR = r_ECR' - [0, 0, z_geoid]
+    r_ecr = vector_subtract(r_ecr_prime, [0.0, 0.0, z_geoid])
+
+    return r_ecr
+
+
+def D_2_3_1_3_enu_to_ecr_velocity(R_enu_to_ecr: Matrix3x3,
+                                   v_enu: Vector3) -> Vector3:
+    """
+    D.2.3.1.3 ENU to ECR Velocity
+
+    v_ECR = R_ENU_to_ECR . v_ENU
+
+    Args:
+        R_enu_to_ecr: ENU to ECR DCM (from D.2.3.1.1)
+        v_enu: [m/s] Velocity vector in ENU frame
+
+    Returns:
+        [m/s] Velocity vector in ECR frame
+    """
+    v_ecr = matrix_vector_multiply(R_enu_to_ecr, v_enu)
+    return v_ecr
+
+
+def D_2_3_1_3_enu_to_ecr_acceleration(R_enu_to_ecr: Matrix3x3,
+                                       a_enu: Vector3) -> Vector3:
+    """
+    D.2.3.1.3 ENU to ECR Acceleration
+
+    a_ECR = R_ENU_to_ECR . a_ENU
+
+    Args:
+        R_enu_to_ecr: ENU to ECR DCM (from D.2.3.1.1)
+        a_enu: [m/s^2] Acceleration vector in ENU frame
+
+    Returns:
+        [m/s^2] Acceleration vector in ECR frame
+    """
+    a_ecr = matrix_vector_multiply(R_enu_to_ecr, a_enu)
+    return a_ecr
+
+
+def D_2_3_2_1_enu_to_ned_dcm() -> Matrix3x3:
+    """
+    D.2.3.2.1 ENU to NED (DCM)
+
+    The ENU to NED transformation is a simple axis permutation and sign change.
+
+    R_ENU_to_NED = | 0  1   0 |
+                   | 1  0   0 |
+                   | 0  0  -1 |
+
+    Returns:
+        3x3 DCM transforming from ENU to NED frame
+    """
+    R_enu_to_ned = [
+        [0, 1,  0],
+        [1, 0,  0],
+        [0, 0, -1]
+    ]
+    return R_enu_to_ned
+
+
+def D_2_3_2_2_enu_to_ned_position(r_enu: Vector3) -> Vector3:
+    """
+    D.2.3.2.2 ENU to NED Position
+
+    North_NED = North_ENU
+    East_NED = East_ENU
+    Down_NED = -Up_ENU
+
+    r_NED = R_ENU_to_NED . r_ENU
+
+    Args:
+        r_enu: [meters] Position vector in ENU frame [East, North, Up]
+
+    Returns:
+        [meters] Position vector in NED frame [North, East, Down]
+    """
+    R_enu_to_ned = D_2_3_2_1_enu_to_ned_dcm()
+    r_ned = matrix_vector_multiply(R_enu_to_ned, r_enu)
+    return r_ned
+
+
+def D_2_3_2_2_enu_to_ned_velocity(v_enu: Vector3) -> Vector3:
+    """
+    D.2.3.2.2 ENU to NED Velocity
+
+    v_NED = R_ENU_to_NED . v_ENU
+
+    Args:
+        v_enu: [m/s] Velocity vector in ENU frame
+
+    Returns:
+        [m/s] Velocity vector in NED frame
+    """
+    R_enu_to_ned = D_2_3_2_1_enu_to_ned_dcm()
+    v_ned = matrix_vector_multiply(R_enu_to_ned, v_enu)
+    return v_ned
+
+
+def D_2_3_2_2_enu_to_ned_acceleration(a_enu: Vector3) -> Vector3:
+    """
+    D.2.3.2.2 ENU to NED Acceleration
+
+    a_NED = R_ENU_to_NED . a_ENU
+
+    Args:
+        a_enu: [m/s^2] Acceleration vector in ENU frame
+
+    Returns:
+        [m/s^2] Acceleration vector in NED frame
+    """
+    R_enu_to_ned = D_2_3_2_1_enu_to_ned_dcm()
+    a_ned = matrix_vector_multiply(R_enu_to_ned, a_enu)
+    return a_ned
+
+
+# -----------------------------------------------------------------------------
+# D.2.4 From NED
+# -----------------------------------------------------------------------------
+
+def D_2_4_1_1_ned_to_enu_dcm() -> Matrix3x3:
+    """
+    D.2.4.1.1 NED to ENU (DCM)
+
+    The NED to ENU transformation is the transpose of the ENU to NED DCM.
+    Since the matrix is orthogonal and symmetric, transpose equals original.
+
+    R_NED_to_ENU = R_ENU_to_NED^T = | 0  1   0 |
+                                    | 1  0   0 |
+                                    | 0  0  -1 |
+
+    Returns:
+        3x3 DCM transforming from NED to ENU frame
+    """
+    R_ned_to_enu = [
+        [0, 1,  0],
+        [1, 0,  0],
+        [0, 0, -1]
+    ]
+    return R_ned_to_enu
+
+
+def D_2_4_1_2_ned_to_enu_position(r_ned: Vector3) -> Vector3:
+    """
+    D.2.4.1.2 NED to ENU Position
+
+    East_ENU = East_NED
+    North_ENU = North_NED
+    Up_ENU = -Down_NED
+
+    r_ENU = R_NED_to_ENU . r_NED
+
+    Args:
+        r_ned: [meters] Position vector in NED frame [North, East, Down]
+
+    Returns:
+        [meters] Position vector in ENU frame [East, North, Up]
+    """
+    R_ned_to_enu = D_2_4_1_1_ned_to_enu_dcm()
+    r_enu = matrix_vector_multiply(R_ned_to_enu, r_ned)
+    return r_enu
+
+
+def D_2_4_1_2_ned_to_enu_velocity(v_ned: Vector3) -> Vector3:
+    """
+    D.2.4.1.2 NED to ENU Velocity
+
+    v_ENU = R_NED_to_ENU . v_NED
+
+    Args:
+        v_ned: [m/s] Velocity vector in NED frame
+
+    Returns:
+        [m/s] Velocity vector in ENU frame
+    """
+    R_ned_to_enu = D_2_4_1_1_ned_to_enu_dcm()
+    v_enu = matrix_vector_multiply(R_ned_to_enu, v_ned)
+    return v_enu
+
+
+def D_2_4_1_2_ned_to_enu_acceleration(a_ned: Vector3) -> Vector3:
+    """
+    D.2.4.1.2 NED to ENU Acceleration
+
+    a_ENU = R_NED_to_ENU . a_NED
+
+    Args:
+        a_ned: [m/s^2] Acceleration vector in NED frame
+
+    Returns:
+        [m/s^2] Acceleration vector in ENU frame
+    """
+    R_ned_to_enu = D_2_4_1_1_ned_to_enu_dcm()
+    a_enu = matrix_vector_multiply(R_ned_to_enu, a_ned)
+    return a_enu
+
+
+# -----------------------------------------------------------------------------
+# D.2.5 From LLA
+# -----------------------------------------------------------------------------
+
+def D_2_5_1_1_lla_to_ecr_position(lat: float, lon: float, alt: float,
+                                   r_a: float = WGS84_A,
+                                   epsilon_sq: float = WGS84_E_SQ) -> Vector3:
+    """
+    D.2.5.1.1 LLA to ECR Position
+
+    X = (r_pv + Alt) * cos(Lat) * cos(Lon)
+    Y = (r_pv + Alt) * cos(Lat) * sin(Lon)
+    Z = (r_pv * (1 - epsilon^2) + Alt) * sin(Lat)
+    r_ECR = [X, Y, Z]
+
+    Args:
+        lat: [radians] Geodetic latitude
+        lon: [radians] Geodetic longitude
+        alt: [meters] Geodetic altitude
+        r_a: [meters] Earth semi-major axis (default: WGS84)
+        epsilon_sq: First eccentricity squared (default: WGS84)
+
+    Returns:
+        [meters] Position vector in ECR frame
+    """
+    r_pv = D_7_2_prime_vertical_radius(r_a, epsilon_sq, lat)
+
+    X = (r_pv + alt) * math.cos(lat) * math.cos(lon)
+    Y = (r_pv + alt) * math.cos(lat) * math.sin(lon)
+    Z = (r_pv * (1 - epsilon_sq) + alt) * math.sin(lat)
+
+    r_ecr = [X, Y, Z]
+    return r_ecr
+
+
+# -----------------------------------------------------------------------------
+# D.2.6 From Body CG
+# -----------------------------------------------------------------------------
+
+def D_2_6_1_1_body_cg_to_eci_dcm(phi: float, theta: float, psi: float) -> Matrix3x3:
+    """
+    D.2.6.1.1 Body CG to ECI (DCM)
+
+    The Body CG to ECI DCM is the transpose of the ECI to Body CG DCM.
+
+    R_BodyCG_to_ECI = R_ECI_to_BodyCG^T
+
+    Args:
+        phi: [radians] Roll angle (I2B)
+        theta: [radians] Pitch angle (I2B)
+        psi: [radians] Yaw angle (I2B)
+
+    Returns:
+        3x3 DCM transforming from Body CG to ECI frame
+    """
+    R_eci_to_body_cg = D_2_1_2_1_eci_to_body_cg_dcm(phi, theta, psi)
+    R_body_cg_to_eci = matrix_transpose(R_eci_to_body_cg)
+    return R_body_cg_to_eci
+
+
+def D_2_6_1_3_body_cg_to_eci_velocity(R_body_cg_to_eci: Matrix3x3,
+                                       v_body_cg: Vector3) -> Vector3:
+    """
+    D.2.6.1.3 Body CG to ECI Velocity
+
+    v_ECI = R_BodyCG_to_ECI . v_BodyCG
+
+    Args:
+        R_body_cg_to_eci: Body CG to ECI DCM (from D.2.6.1.1)
+        v_body_cg: [m/s] Velocity vector in Body CG frame
+
+    Returns:
+        [m/s] Velocity vector in ECI frame
+    """
+    v_eci = matrix_vector_multiply(R_body_cg_to_eci, v_body_cg)
+    return v_eci
+
+
+def D_2_6_1_3_body_cg_to_eci_acceleration(R_body_cg_to_eci: Matrix3x3,
+                                           a_body_cg: Vector3) -> Vector3:
+    """
+    D.2.6.1.3 Body CG to ECI Acceleration
+
+    a_ECI = R_BodyCG_to_ECI . a_BodyCG
+
+    Args:
+        R_body_cg_to_eci: Body CG to ECI DCM (from D.2.6.1.1)
+        a_body_cg: [m/s^2] Acceleration vector in Body CG frame
+
+    Returns:
+        [m/s^2] Acceleration vector in ECI frame
+    """
+    a_eci = matrix_vector_multiply(R_body_cg_to_eci, a_body_cg)
+    return a_eci
+
+
+def D_2_6_2_1_body_cg_to_body_nose_position(r_body_cg: Vector3,
+                                             r_cg: Vector3) -> Vector3:
+    """
+    D.2.6.2.1 Body CG to Body Nose Position
+
+    r_BodyNose = r_BodyCG + r_CG
+
+    Args:
+        r_body_cg: [meters] Position vector in Body CG frame
+        r_cg: [meters] CG position in Body Nose frame
+              [x_pos_center_gravity, y_pos_center_gravity, z_pos_center_gravity]
+
+    Returns:
+        [meters] Position vector in Body Nose frame
+    """
+    r_body_nose = vector_add(r_body_cg, r_cg)
+    return r_body_nose
+
+
+def D_2_6_2_2_body_cg_to_body_nose_velocity(v_body_cg: Vector3) -> Vector3:
+    """
+    D.2.6.2.2 Body CG to Body Nose Velocity
+
+    Since Body CG and Body Nose frames share orientation and move rigidly:
+    v_BodyNose = v_BodyCG
+
+    Args:
+        v_body_cg: [m/s] Velocity vector in Body CG frame
+
+    Returns:
+        [m/s] Velocity vector in Body Nose frame
+    """
+    v_body_nose = v_body_cg[:]  # Copy
+    return v_body_nose
+
+
+def D_2_6_2_2_body_cg_to_body_nose_acceleration(a_body_cg: Vector3) -> Vector3:
+    """
+    D.2.6.2.2 Body CG to Body Nose Acceleration
+
+    Since Body CG and Body Nose frames share orientation and move rigidly:
+    a_BodyNose = a_BodyCG
+
+    Args:
+        a_body_cg: [m/s^2] Acceleration vector in Body CG frame
+
+    Returns:
+        [m/s^2] Acceleration vector in Body Nose frame
+    """
+    a_body_nose = a_body_cg[:]  # Copy
+    return a_body_nose
+
+
+# -----------------------------------------------------------------------------
+# D.2.7 From Body Nose
+# -----------------------------------------------------------------------------
+
+def D_2_7_1_1_body_nose_to_body_cg_position(r_body_nose: Vector3,
+                                             r_cg: Vector3) -> Vector3:
+    """
+    D.2.7.1.1 Body Nose to Body CG Position
+
+    r_BodyCG = r_BodyNose - r_CG
+
+    Args:
+        r_body_nose: [meters] Position vector in Body Nose frame
+        r_cg: [meters] CG position in Body Nose frame
+              [x_pos_center_gravity, y_pos_center_gravity, z_pos_center_gravity]
+
+    Returns:
+        [meters] Position vector in Body CG frame
+    """
+    r_body_cg = vector_subtract(r_body_nose, r_cg)
+    return r_body_cg
+
+
+def D_2_7_1_2_body_nose_to_body_cg_velocity(v_body_nose: Vector3) -> Vector3:
+    """
+    D.2.7.1.2 Body Nose to Body CG Velocity
+
+    Since Body Nose and Body CG frames share orientation and move rigidly:
+    v_BodyCG = v_BodyNose
+
+    Args:
+        v_body_nose: [m/s] Velocity vector in Body Nose frame
+
+    Returns:
+        [m/s] Velocity vector in Body CG frame
+    """
+    v_body_cg = v_body_nose[:]  # Copy
+    return v_body_cg
+
+
+def D_2_7_1_2_body_nose_to_body_cg_acceleration(a_body_nose: Vector3) -> Vector3:
+    """
+    D.2.7.1.2 Body Nose to Body CG Acceleration
+
+    Since Body Nose and Body CG frames share orientation and move rigidly:
+    a_BodyCG = a_BodyNose
+
+    Args:
+        a_body_nose: [m/s^2] Acceleration vector in Body Nose frame
+
+    Returns:
+        [m/s^2] Acceleration vector in Body CG frame
+    """
+    a_body_cg = a_body_nose[:]  # Copy
+    return a_body_cg
 
 
 # =============================================================================
@@ -1388,6 +2483,8 @@ __all__ = [
     'vector_add',
     'matrix_multiply',
     'matrix_vector_multiply',
+    'matrix_transpose',
+    'vector_scale',
     'sign',
 
     # D.1 Rotational State Transformations
@@ -1401,7 +2498,52 @@ __all__ = [
     'D_1_2_3_quaternion_to_body_direction',
 
     # D.2 Spatial State Transformations
+    'D_2_0_1_earth_angular_velocity_vector',
+    'D_2_0_2_earth_rotation_angle',
+    'D_2_0_3_transport_velocity',
+    'D_2_0_4_relative_velocity_eci',
+    'D_2_0_5_coriolis_acceleration',
+    'D_2_0_6_centripetal_acceleration',
+    'D_2_0_7_relative_acceleration_eci',
+    'D_2_1_1_1_eci_to_ecr_dcm',
+    'D_2_1_1_2_eci_to_ecr_position',
+    'D_2_1_1_3_eci_to_ecr_velocity',
+    'D_2_1_1_4_eci_to_ecr_acceleration',
     'D_2_1_2_1_eci_to_body_cg_dcm',
+    'D_2_1_2_2_eci_to_body_cg_position',
+    'D_2_1_2_3_eci_to_body_cg_velocity',
+    'D_2_1_2_3_eci_to_body_cg_acceleration',
+    'D_2_2_1_1_ecr_to_eci_dcm',
+    'D_2_2_1_2_ecr_to_eci_position',
+    'D_2_2_1_3_ecr_to_eci_velocity',
+    'D_2_2_1_4_ecr_to_eci_acceleration',
+    'D_2_2_2_ecr_to_lla',
+    'D_2_2_3_1_ecr_to_enu_dcm',
+    'D_2_2_3_2_ecr_to_enu_position',
+    'D_2_2_3_3_ecr_to_enu_velocity',
+    'D_2_2_3_3_ecr_to_enu_acceleration',
+    'D_2_3_1_1_enu_to_ecr_dcm',
+    'D_2_3_1_2_enu_to_ecr_position',
+    'D_2_3_1_3_enu_to_ecr_velocity',
+    'D_2_3_1_3_enu_to_ecr_acceleration',
+    'D_2_3_2_1_enu_to_ned_dcm',
+    'D_2_3_2_2_enu_to_ned_position',
+    'D_2_3_2_2_enu_to_ned_velocity',
+    'D_2_3_2_2_enu_to_ned_acceleration',
+    'D_2_4_1_1_ned_to_enu_dcm',
+    'D_2_4_1_2_ned_to_enu_position',
+    'D_2_4_1_2_ned_to_enu_velocity',
+    'D_2_4_1_2_ned_to_enu_acceleration',
+    'D_2_5_1_1_lla_to_ecr_position',
+    'D_2_6_1_1_body_cg_to_eci_dcm',
+    'D_2_6_1_3_body_cg_to_eci_velocity',
+    'D_2_6_1_3_body_cg_to_eci_acceleration',
+    'D_2_6_2_1_body_cg_to_body_nose_position',
+    'D_2_6_2_2_body_cg_to_body_nose_velocity',
+    'D_2_6_2_2_body_cg_to_body_nose_acceleration',
+    'D_2_7_1_1_body_nose_to_body_cg_position',
+    'D_2_7_1_2_body_nose_to_body_cg_velocity',
+    'D_2_7_1_2_body_nose_to_body_cg_acceleration',
 
     # D.3 Flight Data
     'D_3_1_1_airspeed_eci',
@@ -1450,4 +2592,8 @@ __all__ = [
     # Constants
     'GAMMA_AIR',
     'R_AIR',
+    'OMEGA_EARTH',
+    'WGS84_A',
+    'WGS84_F',
+    'WGS84_E_SQ',
 ]
